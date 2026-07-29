@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+venv/
+.venv/
+
+# Data — never commit
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.csv
+
+# Model checkpoints
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+
+# OpenFOAM output
+cfd/openfoam_cases/*/[0-9]*/
+cfd/openfoam_cases/*/processor*/
+cfd/openfoam_cases/*/postProcessing/
+*.foam
+*.vtk
+*.vtu
+*.vtp
+
+# Notebooks output
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Weights & Biases
+wandb/
