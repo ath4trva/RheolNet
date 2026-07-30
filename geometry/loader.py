@@ -1,0 +1,80 @@
+import pyvista as pv
+import numpy as np
+import h5py
+
+
+def load_and_sample_geometry(stl_path,
+                              n_interior=50000,
+                              n_surface=10000,
+                              n_inlet=500):
+    """
+    Load artery surface mesh and sample collocation points.
+    Returns dict of (x,y,z) arrays for PINN training.
+    """
+    mesh = pv.read(stl_path)
+    print(f"Mesh loaded: {mesh.n_points} points, "
+          f"{mesh.n_cells} cells")
+
+    surface_pts = mesh.points[
+        np.random.choice(mesh.n_points, n_surface, replace=False)
+    ]
+
+    volume = mesh.delaunay_3d()
+    interior = volume.extract_cells(
+        np.arange(volume.n_cells)
+    ).cell_centers().points
+
+    idx = np.random.choice(len(interior),
+                            min(n_interior, len(interior)),
+                            replace=False)
+    interior_pts = interior[idx]
+
+    bounds = mesh.bounds
+    inlet_mask = surface_pts[:, 0] < (bounds[0] + 0.5)
+    inlet_pts = surface_pts[inlet_mask][:n_inlet]
+
+    return {
+        "interior": interior_pts,
+        "wall": surface_pts,
+        "inlet": inlet_pts
+    }
+
+
+def save_to_hdf5(pts_dict, save_path):
+    """Save collocation points to HDF5 for training"""
+    with h5py.File(save_path, 'w') as f:
+        for key, pts in pts_dict.items():
+            f.create_dataset(key, data=pts)
+    print(f"Saved to {save_path}")
+
+
+import vtk
+from vtk.util.numpy_support import vtk_to_numpy
+
+
+def load_aneumo_cfd(vtu_path):
+    """
+    Load Aneumo precomputed CFD solution.
+    Returns points, velocity, pressure as numpy arrays.
+    """
+    reader = vtk.vtkXMLUnstructuredGridReader()
+    reader.SetFileName(vtu_path)
+    reader.Update()
+    data = reader.GetOutput()
+
+    points = vtk_to_numpy(data.GetPoints().GetData())
+
+    velocity = vtk_to_numpy(
+        data.GetPointData().GetArray('U')
+    )
+    pressure = vtk_to_numpy(
+        data.GetPointData().GetArray('p')
+    )
+
+    print(f"Points: {points.shape}")
+    print(f"Velocity range: {velocity.min():.4f} "
+          f"to {velocity.max():.4f} m/s")
+    print(f"Pressure range: {pressure.min():.2f} "
+          f"to {pressure.max():.2f} Pa")
+
+    return points, velocity, pressure
