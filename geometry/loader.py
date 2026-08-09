@@ -102,3 +102,33 @@ def load_aneumo_as_vessel_geometry(stl_path, case_id=None):
         case_id=case_id or stl_path,
         metadata={"n_cells": mesh.n_cells}
     )
+
+
+def load_vmr_as_vessel_geometry(vtp_path, case_id=None):
+    """
+    Loads a VMR surface mesh (.vtp) into the unified VesselGeometry container.
+    """
+    reader = vtk.vtkXMLPolyDataReader()
+    reader.SetFileName(vtp_path)
+    reader.Update()
+    data = reader.GetOutput()
+
+    points = vtk_to_numpy(data.GetPoints().GetData())
+
+    polys = data.GetPolys()
+    polys.InitTraversal()
+    faces = []
+    id_list = vtk.vtkIdList()
+    while polys.GetNextCell(id_list):
+        if id_list.GetNumberOfIds() == 3:
+            faces.append([id_list.GetId(0), id_list.GetId(1), id_list.GetId(2)])
+    faces = np.array(faces)
+
+    return VesselGeometry(
+        points=points,
+        faces=faces,
+        normals=None,
+        source="vmr",
+        case_id=case_id or vtp_path,
+        metadata={"n_cells": data.GetNumberOfCells()}
+    )
