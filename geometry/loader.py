@@ -78,3 +78,27 @@ def load_aneumo_cfd(vtu_path):
           f"to {pressure.max():.2f} Pa")
 
     return points, velocity, pressure
+
+
+from vessel_geometry import VesselGeometry
+
+
+def load_aneumo_as_vessel_geometry(stl_path, case_id=None):
+    """
+    Wraps STL loading into the unified VesselGeometry container.
+    """
+    mesh = pv.read(stl_path)
+    faces = mesh.faces.reshape(-1, 4)[:, 1:4]
+    try:
+        normals = mesh.point_normals
+    except Exception:
+        normals = None
+
+    return VesselGeometry(
+        points=mesh.points,
+        faces=faces,
+        normals=normals,
+        source="aneumo",
+        case_id=case_id or stl_path,
+        metadata={"n_cells": mesh.n_cells}
+    )
