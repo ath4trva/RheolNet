@@ -1,54 +1,235 @@
-
 import torch
 
+from .carreau_yasuda import carreau_yasuda_viscosity
 
-def compute_ns_residuals_nonnewtonian(xy, eta0=0.056, eta_inf=0.0035, lam=3.313, n=0.3568, a=2.0):
-    
-    xy = xy.detach().requires_grad_(True)
-    
+
+def gradients(output, inputs):
+    """
+    Compute first derivative of output with respect to inputs.
+    """
+
+    return torch.autograd.grad(
+        outputs=output,
+        inputs=inputs,
+        grad_outputs=torch.ones_like(output),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+
+def compute_ns_residuals_nonnewtonian(
+    model,
+    xy,
+    rho=1.0,
+    eta0=0.056,
+    eta_inf=0.0035,
+    lam=3.313,
+    n=0.3568,
+    a=2.0,
+    eps=1e-12,
+):
+    """
+    Steady 2D incompressible Navier-Stokes residuals
+    with Carreau-Yasuda viscosity.
+
+    Model input:
+        xy -> [x, y]
+
+    Model output:
+        [u, v, p]
+
+    Returns:
+        continuity
+        momentum_x
+        momentum_y
+        eta
+        gamma_dot
+    """
+
+    # ----------------------------------------------------------
+    # Make coordinates differentiable
+    # ----------------------------------------------------------
+
+    if not xy.requires_grad:
+        xy = xy.clone().detach().requires_grad_(True)
+
+    # ----------------------------------------------------------
+    # Neural-network prediction
+    # ----------------------------------------------------------
+
     pred = model(xy)
-    u = pred[:, 0:1]   # x-velocity, shape [N, 1]
-    v = pred[:, 1:2]   # y-velocity, shape [N, 1]
-    p = pred[:, 2:3]   # pressure,   shape [N, 1]
 
-    def grad(f, wrt):
-        return torch.autograd.grad(
-            f, wrt,
-            grad_outputs=torch.ones_like(f),
-            create_graph=True,
-            retain_graph=True
-        )[0]
+    u = pred[:, 0:1]
+    v = pred[:, 1:2]
+    p = pred[:, 2:3]
 
+    # ----------------------------------------------------------
     # First derivatives
-    grad_u = grad(u, xy)          # [N, 2]: columns are du/dx, du/dy
-    grad_p = grad(p, xy)          # [N, 2]: columns are dp/dx, dp/dy
+    # ----------------------------------------------------------
 
-    du_dx = grad_u[:, 0:1]        # [N, 1]
-    du_dy = grad_u[:, 1:2]        # [N, 1]  ← this is what drives shear rate
-    dp_dx = grad_p[:, 0:1]        # [N, 1]
+    grad_u = gradients(u, xy)
+    grad_v = gradients(v, xy)
+    grad_p = gradients(p, xy)
 
-    # Shear rate: how fast velocity changes across the pipe
-    # Add 1e-8 to avoid exactly zero (causes numerical issues in CY formula)
-    gamma_dot = torch.abs(du_dy) + 1e-8    # [N, 1]
+    u_x = grad_u[:, 0:1]
+    u_y = grad_u[:, 1:2]
 
-    # Local viscosity at every point via Carreau-Yasuda
-    eta = carreau_yasuda_viscosity(gamma_dot, eta0, eta_inf, lam, n, a)  # [N, 1]
+    v_x = grad_v[:, 0:1]
+    v_y = grad_v[:, 1:2]
 
-    # Viscous stress = eta * du/dy  (force one fluid layer exerts on neighbour)
-    stress = eta * du_dy                   # [N, 1]
+    p_x = grad_p[:, 0:1]
+    p_y = grad_p[:, 1:2]
 
-    # d/dy(eta * du/dy) — net viscous force per unit volume
-    # autograd applies product rule automatically here
-    d_stress_dy = grad(stress, xy)[:, 1:2] # [N, 1]
+    # ----------------------------------------------------------
+    # Strain-rate tensor
+    #
+    # D = 1/2 (grad(u) + grad(u)^T)
+    # ----------------------------------------------------------
 
-    # Momentum residual: pressure force + viscous force = 0
-    R_momentum = -dp_dx + d_stress_dy      # [N, 1]
+    D_xx = u_x
 
-    # Continuity: fully-developed flow → du/dx = 0
-    R_continuity = du_dx                   # [N, 1]
+    D_yy = v_y
 
-    # Return flat [N] tensors so they're easy to work with
-    return (R_momentum.squeeze(),
-            R_continuity.squeeze(),
-            eta.squeeze(),
-            gamma_dot.squeeze())
+    D_xy = 0.5 * (
+        u_y + v_x
+    )
+
+    # ----------------------------------------------------------
+    # Effective shear rate
+    #
+    # gamma_dot = sqrt(2 * D:D)
+    #
+    # In simple Poiseuille flow this reduces to:
+    #
+    # gamma_dot = |du/dy|
+    # ----------------------------------------------------------
+
+    gamma_dot = torch.sqrt(
+        2.0 * D_xx**2
+        + 2.0 * D_yy**2
+        + 4.0 * D_xy**2
+        + eps
+    )
+
+    # ----------------------------------------------------------
+    # Carreau-Yasuda viscosity
+    # ----------------------------------------------------------
+
+    eta = carreau_yasuda_viscosity(
+        gamma_dot=gamma_dot,
+        eta0=eta0,
+        eta_inf=eta_inf,
+        lam=lam,
+        n=n,
+        a=a,
+    )
+
+    # ----------------------------------------------------------
+    # Non-Newtonian viscous stress
+    #
+    # tau = 2 eta D
+    # ----------------------------------------------------------
+
+    tau_xx = (
+        2.0
+        * eta
+        * D_xx
+    )
+
+    tau_yy = (
+        2.0
+        * eta
+        * D_yy
+    )
+
+    tau_xy = (
+        2.0
+        * eta
+        * D_xy
+    )
+
+    # ----------------------------------------------------------
+    # Divergence of viscous stress
+    # ----------------------------------------------------------
+
+    grad_tau_xx = gradients(
+        tau_xx,
+        xy,
+    )
+
+    grad_tau_xy = gradients(
+        tau_xy,
+        xy,
+    )
+
+    grad_tau_yy = gradients(
+        tau_yy,
+        xy,
+    )
+
+    tau_xx_x = grad_tau_xx[:, 0:1]
+
+    tau_xy_y = grad_tau_xy[:, 1:2]
+
+    tau_xy_x = grad_tau_xy[:, 0:1]
+
+    tau_yy_y = grad_tau_yy[:, 1:2]
+
+    # ----------------------------------------------------------
+    # Continuity
+    #
+    # du/dx + dv/dy = 0
+    # ----------------------------------------------------------
+
+    continuity = (
+        u_x
+        + v_y
+    )
+
+    # ----------------------------------------------------------
+    # X momentum
+    #
+    # rho(u ux + v uy)
+    # + px
+    # - div(tau)_x
+    # = 0
+    # ----------------------------------------------------------
+
+    momentum_x = (
+        rho
+        * (
+            u * u_x
+            + v * u_y
+        )
+        + p_x
+        - (
+            tau_xx_x
+            + tau_xy_y
+        )
+    )
+
+    # ----------------------------------------------------------
+    # Y momentum
+    # ----------------------------------------------------------
+
+    momentum_y = (
+        rho
+        * (
+            u * v_x
+            + v * v_y
+        )
+        + p_y
+        - (
+            tau_xy_x
+            + tau_yy_y
+        )
+    )
+
+    return (
+        continuity,
+        momentum_x,
+        momentum_y,
+        eta,
+        gamma_dot,
+    )
