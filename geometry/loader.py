@@ -132,3 +132,47 @@ def load_vmr_as_vessel_geometry(vtp_path, case_id=None):
         case_id=case_id or vtp_path,
         metadata={"n_cells": data.GetNumberOfCells()}
     )
+
+
+def load_aneurisk_as_vessel_geometry(txt_path, case_id=None, n_circle_pts=12):
+    """
+    Loads an AneuRisk65 centreline+radius file and reconstructs an
+    approximate tubular surface as a VesselGeometry.
+    """
+    data = np.loadtxt(txt_path, skiprows=1)
+    centreline = data[:, 2:5]   # X0_obs, Y0_obs, Z0_obs
+    radius = data[:, 1]         # MISR
+
+    n_pts = centreline.shape[0]
+    surface_points = []
+
+    for i in range(n_pts):
+        if i == 0:
+            tangent = centreline[1] - centreline[0]
+        elif i == n_pts - 1:
+            tangent = centreline[-1] - centreline[-2]
+        else:
+            tangent = centreline[i+1] - centreline[i-1]
+        tangent = tangent / (np.linalg.norm(tangent) + 1e-8)
+
+        arbitrary = np.array([1.0, 0.0, 0.0])
+        if abs(np.dot(arbitrary, tangent)) > 0.9:
+            arbitrary = np.array([0.0, 1.0, 0.0])
+        normal1 = np.cross(tangent, arbitrary)
+        normal1 = normal1 / (np.linalg.norm(normal1) + 1e-8)
+        normal2 = np.cross(tangent, normal1)
+
+        for theta in np.linspace(0, 2*np.pi, n_circle_pts, endpoint=False):
+            offset = radius[i] * (np.cos(theta) * normal1 + np.sin(theta) * normal2)
+            surface_points.append(centreline[i] + offset)
+
+    surface_points = np.array(surface_points)
+
+    return VesselGeometry(
+        points=surface_points,
+        faces=None,
+        normals=None,
+        source="aneurisk65",
+        case_id=case_id or txt_path,
+        metadata={"n_centreline_pts": n_pts, "reconstructed_tube": True}
+    )
