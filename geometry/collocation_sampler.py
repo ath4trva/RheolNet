@@ -27,17 +27,33 @@ def sample_collocation_points(vessel_geometry, n_interior=50000, n_wall=10000,
             np.arange(volume.n_cells)
         ).cell_centers().points
     else:
-        # AneuRisk65-style point cloud: sample inside bounding box as fallback
-        interior_candidates = np.random.uniform(bounds_min, bounds_max, size=(n_interior*2, 3))
+        # AneuRisk65-style point cloud (no faces = no enclosed volume to
+        # sample). Bounding-box random sampling would place most points
+        # outside the thin tube, so instead we jitter INWARD from the
+        # already-correct tube surface points along their inward normal
+        # (toward the local centreline), which stays physically inside
+        # the reconstructed vessel.
+        centre = points.mean(axis=0)
+        directions = centre - points
+        norms = np.linalg.norm(directions, axis=1, keepdims=True)
+        norms[norms < 1e-10] = 1.0
+        directions = directions / norms
+        jitter_fracs = np.random.uniform(0.05, 0.95, size=(len(points), 1))
+        interior_candidates = points + directions * jitter_fracs * norms
 
     idx = np.random.choice(len(interior_candidates),
-                            min(n_interior, len(interior_candidates)), replace=False)
+                            min(n_interior, len(interior_candidates)),
+                            replace=len(interior_candidates) < n_interior)
     interior_pts = interior_candidates[idx]
 
-    # Inlet: lowest-x wall points; Outlet: highest-x wall points
-    x_sorted = np.argsort(wall_pts[:, 0])
-    inlet_pts = wall_pts[x_sorted[:n_inlet]]
-    outlet_pts = wall_pts[x_sorted[-n_outlet:]]
+    # Inlet/outlet: use the LONGEST bounding-box axis as the flow-direction
+    # proxy, not a hardcoded x-axis assumption - a vessel can be oriented
+    # along any axis.
+    extent = bounds_max - bounds_min
+    flow_axis = np.argmax(extent)
+    axis_sorted = np.argsort(wall_pts[:, flow_axis])
+    inlet_pts = wall_pts[axis_sorted[:n_inlet]]
+    outlet_pts = wall_pts[axis_sorted[-n_outlet:]]
 
     # Expand across time samples
     time_samples = np.linspace(0, t_max, n_time)
